@@ -1,0 +1,18 @@
+[package]
+name = "z3jit"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+z3-sys = { path = "./z3.rs/z3-sys" }
+z3 = { path = "./z3.rs/z3" }
+log = "0.4.14"
+env_logger = "0.9.0"
+petgraph = "0.6.0"
+sorted-vec = "0.7.0"
+clap = "3.0.10"
+itertools = "0.10.3"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
