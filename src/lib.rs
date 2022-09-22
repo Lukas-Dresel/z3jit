@@ -1,8 +1,12 @@
-mod ast_verbose_print;
-mod constraintgraph;
-mod jit_constraint;
+#![feature(map_try_insert)]
 
-use z3::ast::{Bool, Ast, Dynamic};
+pub mod ast_verbose_print;
+pub mod constraintgraph;
+pub mod jit_constraint;
+pub mod ast_metadata;
+pub mod util;
+
+use z3::ast::{Bool};
 
 struct Model {
     bytes: Vec<u8>,
@@ -47,13 +51,13 @@ mod tests {
         // cst: var0 + var1 == 1
         // to_compute: input_byte[0] + input_byte[1] == 1
         // (= (+ var0 var1) 1)
-        let y = "
-        char model[0x1000];
+        // let y = "
+        // char model[0x1000];
 
-        int tmp0 = model[0] + model[1];
-        bool tmp1 = tmp0 == 1;
-        return tmp1;
-        ";
+        // int tmp0 = model[0] + model[1];
+        // bool tmp1 = tmp0 == 1;
+        // return tmp1;
+        // ";
 
     }
 }

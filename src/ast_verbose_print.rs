@@ -9,7 +9,7 @@ pub trait VerbosePrint<'ctx> {
 
 impl<'ctx> VerbosePrint<'ctx> for Dynamic<'ctx> {
     fn print_verbose_inner(&self, indent : usize) {
-        let space = " ".repeat(indent * 2);
+        let space = "-".repeat(indent * 2);
         println!("{}##### {:?} #####", space, self);
         println!("{}Kind:        {:?}", space, self.kind());
         println!("{}SortKind:    {:?}", space, self.sort_kind());

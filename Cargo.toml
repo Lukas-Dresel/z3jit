@@ -5,14 +5,26 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
+[build]
+jobs = 1
 
-z3-sys = { path = "./z3.rs/z3-sys" }
-z3 = { path = "./z3.rs/z3" }
+[profile.dev]
+codegen-units = 2
+[profile.release]
+codegen-units = 2
+[profile.test]
+codegen-units = 2
+
+[dependencies]
 log = "0.4.14"
 env_logger = "0.9.0"
 petgraph = "0.6.0"
-sorted-vec = "0.7.0"
+sorted-vec = "0.8.0"
 clap = "3.0.10"
 itertools = "0.10.3"
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
+rand = "0.8.4"
+
+z3 = { path = "../../../research/mctsse/repos/z3.rs/z3" }
+
+inkwell = { path = "../inkwell", features = ["llvm12-0"] }
+quanta = "0.9.3"
