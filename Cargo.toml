@@ -24,7 +24,7 @@ clap = "3.0.10"
 itertools = "0.10.3"
 rand = "0.8.4"
 
-z3 = { path = "../../../research/mctsse/repos/z3.rs/z3" }
+z3 = { git = "https://github.com/Lukas-Dresel/z3.rs.git", branch = "feat/z3_information_extraction" }
 
-inkwell = { path = "../inkwell", features = ["llvm12-0"] }
-quanta = "0.9.3"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
+quanta = "0.10.1"
