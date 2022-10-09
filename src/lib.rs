@@ -8,23 +8,6 @@ pub mod util;
 
 use z3::ast::{Bool};
 
-struct Model {
-    bytes: Vec<u8>,
-}
-
-struct JITAst {
-
-}
-
-impl<'ctx> JITAst {
-    fn from_AST(cst: Bool<'ctx>) -> JITAst {
-        JITAst {}
-    }
-    fn evaluate(&self, model: Model) -> bool {
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use z3::{ast::{BV, Ast, Dynamic}, SatResult};

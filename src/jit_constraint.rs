@@ -62,6 +62,11 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
         let builder = context.create_builder();
         let eng = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
 
+        // Workaround for LTO "JIT has not been linked in." issue, see https://github.com/TheDan64/inkwell/issues/320
+        // This prevents rustc from optimizing out the actual JIT implementation
+        ExecutionEngine::link_in_mc_jit();
+        // ExecutionEngine::link_in_interpreter();
+
         let i64_type = context.i64_type();
         let byte_type = context.i8_type();
         let buf_type = byte_type.ptr_type(AddressSpace::Generic);
@@ -382,6 +387,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
             z3::DeclKind::BAND => z3_starop_to_llvm!(build_and),
             z3::DeclKind::BOR => z3_starop_to_llvm!(build_or),
             z3::DeclKind::BXOR => z3_starop_to_llvm!(build_xor),
+            z3::DeclKind::BNOT => {
+                let llvm_children = self.compile_children(&bv)?;
+                assert!(llvm_children.len() == 1);
+                let child = llvm_children[0];
+                let result = self.builder.build_not(child, "");
+                Ok(result)
+            },
             z3::DeclKind::ITE => {
                 let llvm_children = self.compile_children(&bv)?;
                 assert!(llvm_children.len() == 3, "bit vector ITE with non-3 children: {:?}, {:?}", bv, llvm_children);
@@ -431,7 +443,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 };
                 Ok(result)
             },
-            _ => todo!("Have not yet implemented BV operation {:?}", decl)
+            other => todo!("Have not yet implemented BV operation {:?} [{:?}]", decl, other)
         }
     }
 
