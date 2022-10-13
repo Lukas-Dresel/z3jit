@@ -404,7 +404,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                     x => todo!("ITE result is not an int value: {:?}", x),
                 }
             },
-            div @ (z3::DeclKind::BUDIV_I | z3::DeclKind::BSDIV_I | z3::DeclKind::BSREM_I) => {
+            div @ (z3::DeclKind::BUDIV_I | z3::DeclKind::BSDIV_I | z3::DeclKind::BSREM_I | z3::DeclKind::BUREM_I) => {
                 let llvm_children = self.compile_children(&bv)?;
                 assert!(llvm_children.len() == 2, "bit vector integer division with non-2 children: {:?}, {:?}", bv, llvm_children);
                 // println!("BUDIV_I: bv: {:?}, llvm_children: {:?}", bv, llvm_children);
@@ -419,7 +419,10 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                     },
                     z3::DeclKind::BSREM_I => {
                         self.builder.build_int_signed_rem(llvm_children[0], llvm_children[1], &format!("srem_{}", id))
-                    }
+                    },
+                    z3::DeclKind::BUREM_I => {
+                        self.builder.build_int_unsigned_rem(llvm_children[0], llvm_children[1], &format!("urem_{}", id))
+                    },
                     _ => unreachable!(),
                 };
                 // self.dump_bitcode("bitcode_after_div");
