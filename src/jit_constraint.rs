@@ -14,7 +14,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction};
 use inkwell::module::Module;
-use inkwell::values::{IntValue, PointerValue, FunctionValue, BasicValueEnum};
+use inkwell::values::{BasicValue, IntValue, PointerValue, FunctionValue, BasicValueEnum};
 
 use crate::ast_metadata::AstMetadata;
 use crate::util::TimedSolver;
@@ -410,22 +410,154 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 // println!("BUDIV_I: bv: {:?}, llvm_children: {:?}", bv, llvm_children);
                 let id = bv.get_ast_id();
 
-                let result = match div {
+                // okay, the _I operations allow us to assume that the divisor is non-zero. However, it turns out that
+                // that only applies for valid solutions, invalid models *CAN* produce divisions by zero. Since we're
+                // using this to test the validity of the models it turns out we cannot make this assumption here.
+
+                let bitwidth = bv.get_size();
+                let div_int_type = self.llvm_int_type(bitwidth.try_into().unwrap());
+                let div_by_zero_condition = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    llvm_children[1],
+                    div_int_type.const_int(0, false),
+                    "div_by_zero");
+
+                // TODO: make actual basic blocks for div-by-zero to avoid the floating point exception
+                // TODO: figure out how to check for multiplication/division overflow and handle that separately
+                //              aka ignore it because smtlib treats overflow as defined behaviour
+
+                let div_by_zero_block = self.context.append_basic_block(self.function, "");
+                let div_normal_block = self.context.append_basic_block(self.function, "");
+                let merge_block = self.context.append_basic_block(self.function, "");
+
+                self.builder.build_conditional_branch(div_by_zero_condition, div_by_zero_block, div_normal_block);
+
+                self.builder.position_at_end(merge_block);
+                let ret_phi = self.builder.build_phi(div_int_type, "");
+
+                let (result_div_by_zero, result_normal) = match div {
                     z3::DeclKind::BUDIV_I => {
-                        self.builder.build_int_unsigned_div(llvm_children[0], llvm_children[1], &format!("udiv_{}", id))
-                    },
-                    z3::DeclKind::BSDIV_I => {
-                        self.builder.build_int_signed_div(llvm_children[0], llvm_children[1], &format!("sdiv_{}", id))
-                    },
-                    z3::DeclKind::BSREM_I => {
-                        self.builder.build_int_signed_rem(llvm_children[0], llvm_children[1], &format!("srem_{}", id))
+                        // [[(bvudiv s t)]] := if bv2nat([[t]]) = 0
+                        //                      then λx:[0, m). 1
+                        //                      else nat2bv[m](bv2nat([[s]]) div bv2nat([[t]]))
+                        self.builder.position_at_end(div_by_zero_block);
+                        let fpe_ret = div_int_type.const_all_ones();
+
+                        self.builder.position_at_end(div_normal_block);
+                        let normal_ret = self.builder.build_int_unsigned_div( // else return result of division
+                            llvm_children[0], llvm_children[1], &format!("udiv_{}", id)
+                        );
+                        (fpe_ret, normal_ret)
                     },
                     z3::DeclKind::BUREM_I => {
-                        self.builder.build_int_unsigned_rem(llvm_children[0], llvm_children[1], &format!("urem_{}", id))
+                        // [[(bvurem s t)]] := if bv2nat([[t]]) = 0
+                        //                         then [[s]]
+                        //                         else nat2bv[m](bv2nat([[s]]) rem bv2nat([[t]]))
+                        self.builder.position_at_end(div_by_zero_block);
+                        let fpe_ret = llvm_children[0];
+
+                        self.builder.position_at_end(div_normal_block);
+                        let normal_ret = self.builder.build_int_unsigned_rem( // else return result of division
+                            llvm_children[0], llvm_children[1], &format!("urem_{}", id)
+                        );
+                        (fpe_ret, normal_ret)
+                    },
+                    z3::DeclKind::BSDIV_I => {
+                        // see https://github.com/mc-imperial/jfs/blob/d38b3685e878bf552da52b9410b53dd2adcfdfd1/runtime/SMTLIB/SMTLIB/NativeBitVector.cpp#L208
+
+                        // (bvsdiv s t) abbreviates
+                        //  (let ((?msb_s ((_ extract |m-1| |m-1|) s))
+                        //        (?msb_t ((_ extract |m-1| |m-1|) t)))
+                        //    (ite (and (= ?msb_s #b0) (= ?msb_t #b0))
+                        //         (bvudiv s t)
+                        //    (ite (and (= ?msb_s #b1) (= ?msb_t #b0))
+                        //         (bvneg (bvudiv (bvneg s) t))
+                        //    (ite (and (= ?msb_s #b0) (= ?msb_t #b1))
+                        //         (bvneg (bvudiv s (bvneg t)))
+                        //         (bvudiv (bvneg s) (bvneg t))))))
+
+
+                        // we don't model it like this because it's too complicated (maybe we should in the future),
+                        // but to keep it simple we simply compute the signed division and handle the div-by-0 case
+                        // specially
+
+                        // For the division by zero there's two cases: if `s` is non-negative, it returns all ones,
+                        // but if `s` is negative, it returns 0x1 instead (`neg x <=> (not x) + 1` and x is all ones)
+
+                        self.builder.position_at_end(div_by_zero_block);
+
+                        let lhs_is_negative = self.builder.build_int_compare(IntPredicate::SLT, llvm_children[0], div_int_type.const_int(0, false), "lhs_is_negative");
+                        let fpe_ret = self.builder.build_select(
+                            lhs_is_negative,
+                            div_int_type.const_int(1, false),
+                            div_int_type.const_all_ones(),
+                            ""
+                        ).into_int_value();
+
+                        self.builder.position_at_end(div_normal_block);
+                        let normal_ret = self.builder.build_int_signed_div(llvm_children[0], llvm_children[1], &format!("sdiv_{}", id));
+                        (fpe_ret, normal_ret)
+                    },
+                    z3::DeclKind::BSREM_I => {
+                        // see http://smtlib.cs.uiowa.edu/Version3/FixedSizeBitVectors.smt3
+                        // - For all terms s, t of type (BitVec m),
+                        // (bvsrem s t) is equivalent to
+                        //  (let ((?msb_s ((extract |m-1| |m-1|) s))
+                        //        (?msb_t ((extract |m-1| |m-1|) t)))
+                        //    (ite (and (= ?msb_s #b0) (= ?msb_t #b0))
+                        //         (bvurem s t)
+                        //    (ite (and (= ?msb_s #b1) (= ?msb_t #b0))
+                        //         (bvneg (bvurem (bvneg s) t))
+                        //    (ite (and (= ?msb_s #b0) (= ?msb_t #b1))
+                        //         (bvurem s (bvneg t)))
+                        //         (bvneg (bvurem (bvneg s) (bvneg t))))))
+
+
+                        // we don't model it like this because it's too complicated (maybe we should in the future),
+                        // but to keep it simple we simply compute the signed remainder and handle the div-by-0 case
+                        // specially
+
+                        // Division by zero:
+                        //   by the standard: (bvurem s 0) = s
+
+                        // So for this:
+                        // if `s` is non-negative, it returns `s`
+                        // if `s` is negative, it returns `(bvneg s)`
+                        self.builder.position_at_end(div_by_zero_block);
+                        let lhs_is_negative = self.builder.build_int_compare(IntPredicate::SLT, llvm_children[0], div_int_type.const_int(0, false), "lhs_is_negative");
+
+                        let fpe_ret = self.builder.build_select(
+                            lhs_is_negative,
+                            self.builder.build_int_neg(llvm_children[0], ""),
+                            llvm_children[0],
+                            ""
+                        ).into_int_value();
+
+                        self.builder.position_at_end(div_normal_block);
+                        let normal_ret = self.builder.build_int_signed_rem(llvm_children[0], llvm_children[1], &format!("srem_{}", id));
+                        (fpe_ret, normal_ret)
                     },
                     _ => unreachable!(),
                 };
-                // self.dump_bitcode("bitcode_after_div");
+
+                self.builder.position_at_end(div_by_zero_block);
+                self.builder.build_unconditional_branch(merge_block);
+                self.builder.position_at_end(div_normal_block);
+                self.builder.build_unconditional_branch(merge_block);
+
+
+                self.builder.position_at_end(merge_block);
+
+                // don't really understand why this nop casting is really needed, but whatever
+                let ref_result_div_by_zero: &dyn BasicValue = &result_div_by_zero;
+                let ref_result_normal: &dyn BasicValue = &result_normal;
+
+                // add merged values as incoming values to the phi node
+                let incoming = [(ref_result_div_by_zero, div_by_zero_block), (ref_result_normal, div_normal_block)];
+                ret_phi.add_incoming(&incoming[..]);
+
+                self.dump_bitcode("bitcode_after_div");
+                let result = ret_phi.as_basic_value().into_int_value();
                 Ok(result)
             },
             shift @ (z3::DeclKind::BASHR | z3::DeclKind::BLSHR | z3::DeclKind::BSHL) => {
