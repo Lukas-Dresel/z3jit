@@ -556,7 +556,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 let incoming = [(ref_result_div_by_zero, div_by_zero_block), (ref_result_normal, div_normal_block)];
                 ret_phi.add_incoming(&incoming[..]);
 
-                self.dump_bitcode("bitcode_after_div");
+                // self.dump_bitcode("bitcode_after_div");
                 let result = ret_phi.as_basic_value().into_int_value();
                 Ok(result)
             },
