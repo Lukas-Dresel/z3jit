@@ -69,7 +69,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
 
         let i64_type = context.i64_type();
         let byte_type = context.i8_type();
-        let buf_type = byte_type.ptr_type(AddressSpace::Generic);
+        let buf_type = byte_type.ptr_type(AddressSpace::from(0));
         let bool_type = context.bool_type();
 
         let fn_type = bool_type.fn_type(&[buf_type.into(), i64_type.into()], false);
