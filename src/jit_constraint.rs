@@ -211,6 +211,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
 
             z3::DeclKind::AND => z3_bool_starop_to_llvm!(build_and),
             z3::DeclKind::OR => z3_bool_starop_to_llvm!(build_or),
+            z3::DeclKind::XOR => z3_bool_starop_to_llvm!(build_xor),
 
             z3::DeclKind::TRUE => self.context.bool_type().const_int(1, false),
             z3::DeclKind::FALSE => self.context.bool_type().const_int(0, false),
