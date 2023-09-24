@@ -1,8 +1,4 @@
-use std::cmp::max;
-use std::collections::{HashSet, HashMap};
-use std::hash::Hash;
-use std::ops::Add;
-
+use std::collections::HashMap;
 use z3::{FuncDecl, DeclKind};
 use z3::ast::{Ast, Dynamic};
 use z3::ast_visitor::{AstVisitor, AstTraversal};
@@ -10,7 +6,8 @@ use z3::ast_visitor::{AstVisitor, AstTraversal};
 
 fn var_name_to_index(name: &str) -> usize {
     let ind = name.find('!').expect(&format!("Invalid variable name!!! {:?}", name));
-    let (pre, post) = name.split_at(ind+1);
+    let (_pre, post) = name.split_at(ind+1);
+    // assert!(pre == "k", "Variable name must start with k: {:?}", name);
     let byte_idx_mult = usize::from_str_radix(post, 10)
         .expect(&format!("Variable index cannot be parsed: {:?}, post={:?}", name, post));
     assert!(byte_idx_mult % 10 == 0, "Parsed out invalid index from {:?}: index={:?}, should be a multiple of 10!", name, byte_idx_mult);
@@ -36,7 +33,7 @@ impl<'ctx> AstMetadata<'ctx> {
         ast.accept_depth_first(self, true, Default::default());
     }
 
-    fn visit_Generic(&mut self, ast: &Dynamic<'ctx>) {
+    fn visit_generic(&mut self, ast: &Dynamic<'ctx>) {
         let depth = ast.children().iter().map(
             |child| self.ast_depths.get(child).unwrap()
         ).max().unwrap_or(&0) + 1;
@@ -46,26 +43,26 @@ impl<'ctx> AstMetadata<'ctx> {
 
 impl<'ctx> AstVisitor<'ctx> for AstMetadata<'ctx> {
     fn visit_Numeral(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast)
+        self.visit_generic(ast)
     }
     fn visit_FuncDecl(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast)
+        self.visit_generic(ast)
     }
     fn visit_Quantifier(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast)
+        self.visit_generic(ast)
     }
     fn visit_Sort(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast)
+        self.visit_generic(ast)
     }
     fn visit_Unknown(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast)
+        self.visit_generic(ast)
     }
     fn visit_Var(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast)
+        self.visit_generic(ast)
     }
 
     fn visit_App(&mut self, ast: &Dynamic<'ctx>) {
-        self.visit_Generic(ast);
+        self.visit_generic(ast);
 
         let decl = ast.decl();
         if decl.arity() != 0 {

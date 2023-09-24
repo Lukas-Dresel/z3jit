@@ -1,16 +1,14 @@
 #![feature(map_try_insert)]
 
+pub mod error;
 pub mod ast_verbose_print;
-pub mod constraintgraph;
 pub mod jit_constraint;
 pub mod ast_metadata;
 pub mod util;
 
-use z3::ast::{Bool};
-
 #[cfg(test)]
 mod tests {
-    use z3::{ast::{BV, Ast, Dynamic}, SatResult};
+    use z3::ast::{BV, Ast, Dynamic};
 
     use crate::ast_verbose_print::VerbosePrint;
 

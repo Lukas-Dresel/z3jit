@@ -5,9 +5,7 @@ use std::path::Path;
 use inkwell::types::{PointerType, StringRadix, FunctionType, IntType};
 use itertools::Itertools;
 
-use z3::{FuncDecl, DeclParam};
-use z3::ast::Bool;
-use z3::{ast::{BV, Ast, Dynamic}, SatResult};
+use z3::{ast::{Bool, BV, Ast, Dynamic}, SatResult, DeclParam};
 
 use inkwell::{OptimizationLevel, AddressSpace, IntPredicate};
 use inkwell::builder::Builder;
@@ -17,22 +15,14 @@ use inkwell::module::Module;
 use inkwell::values::{BasicValue, IntValue, PointerValue, FunctionValue, BasicValueEnum};
 
 use crate::ast_metadata::AstMetadata;
+use crate::error::Z3JitError;
 use crate::util::TimedSolver;
-
-fn topologically_sorted_nodes<'z3ctx>(cst: &Dynamic<'z3ctx>) -> Vec<Dynamic<'z3ctx>> {
-    let mut result_vec: Vec<Dynamic> = vec![];
-    for child in cst.children() {
-        result_vec.append(&mut topologically_sorted_nodes(&child));
-    }
-    result_vec.push(cst.clone());
-    let result = result_vec.into_iter().unique().collect();
-    result
-}
 
 pub type JitContext = inkwell::context::Context;
 
 type JittedValues<'llvmctx, 'z3ctx> = HashMap<Dynamic<'z3ctx>, IntValue<'llvmctx>>;
 type JittedConstraintFunc = unsafe extern "C" fn(*const u8, i64) -> bool;
+
 
 #[derive(Debug)]
 pub struct CodeGen<'llvmctx, 'z3ctx> {
@@ -42,22 +32,22 @@ pub struct CodeGen<'llvmctx, 'z3ctx> {
     execution_engine: ExecutionEngine<'llvmctx>,
 
     fn_name: String,
-    fn_type: FunctionType<'llvmctx>,
+    _fn_type: FunctionType<'llvmctx>,
     function: FunctionValue<'llvmctx>,
 
-    input_buffer_type: PointerType<'llvmctx>,
+    _input_buffer_type: PointerType<'llvmctx>,
     buffer_size_type: IntType<'llvmctx>,
     input_buffer: PointerValue<'llvmctx>,
-    buffer_size: IntValue<'llvmctx>,
+    _buffer_size: IntValue<'llvmctx>,
 
     jitted_values: JittedValues<'llvmctx, 'z3ctx>,
 
-    csts: Vec<Dynamic<'z3ctx>>,
+    _csts: Vec<Dynamic<'z3ctx>>,
     ast_meta: AstMetadata<'z3ctx>,
 }
 
 impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
-    pub fn new(context: &'llvmctx Context, asts: Vec<Bool<'z3ctx>>, name: &str) -> CodeGen<'llvmctx, 'z3ctx> {
+    pub fn new(context: &'llvmctx Context, asts: Vec<Bool<'z3ctx>>, name: &str) -> Result<CodeGen<'llvmctx, 'z3ctx>, Z3JitError> {
         let module = context.create_module("module");
         let builder = context.create_builder();
         let eng = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
@@ -72,13 +62,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
         let buf_type = byte_type.ptr_type(AddressSpace::from(0));
         let bool_type = context.bool_type();
 
-        let fn_type = bool_type.fn_type(&[buf_type.into(), i64_type.into()], false);
-        let function = module.add_function(name, fn_type, None);
+        let _fn_type = bool_type.fn_type(&[buf_type.into(), i64_type.into()], false);
+        let function = module.add_function(name, _fn_type, None);
         let basic_block_entry = context.append_basic_block(function, "entry");
         builder.position_at_end(basic_block_entry);
 
         let buffer = function.get_nth_param(0).expect("huh? we defined these args").into_pointer_value();
-        let buffer_size = function.get_nth_param(1).expect("huh? we defined this arg too").into_int_value();
+        let _buffer_size = function.get_nth_param(1).expect("huh? we defined this arg too").into_int_value();
 
         let dyn_asts: Vec<Dynamic> = asts.iter().map(|x|x.clone().into()).collect();
         let ast_meta = AstMetadata::from(&dyn_asts[..]);
@@ -92,45 +82,46 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
             execution_engine: eng,
 
             fn_name: String::from(name),
-            fn_type,
+            _fn_type,
             function,
 
-            input_buffer_type: buf_type,
+            _input_buffer_type: buf_type,
             buffer_size_type: i64_type,
             input_buffer: buffer,
-            buffer_size,
+            _buffer_size,
 
             jitted_values: HashMap::new(),
 
-            csts: dyn_asts,
+            _csts: dyn_asts,
             ast_meta,
         };
         let buf_size_min = code_gen.buffer_size_type.const_int(code_gen.ast_meta.max_byte_index.try_into().unwrap(), true);
         let buf_size_predicate = code_gen.builder.build_int_compare(
             IntPredicate::SGE,
-            buffer_size,
+            _buffer_size,
             buf_size_min,
             "buffer_size_check"
-        );
-        code_gen.build_early_exit_false(buf_size_predicate, "buffer_too_small");
+        )?;
+        code_gen.build_early_exit_false(buf_size_predicate, "buffer_too_small")?;
         for c in asts_sorted
         {
             code_gen.compile_constraint(c).unwrap();
         }
         let retval = code_gen.context.bool_type().const_int(1, false);
-        code_gen.builder.build_return(Some(&retval));
+        code_gen.builder.build_return(Some(&retval))?;
         code_gen.execution_engine.get_function_address(name).unwrap(); // check that it worked for now like this
 
-        code_gen
+        Ok(code_gen)
     }
 
-    fn build_early_exit_false(&mut self, pred_to_check: IntValue<'llvmctx>, exit_id: &str) {
+    fn build_early_exit_false(&mut self, pred_to_check: IntValue<'llvmctx>, exit_id: &str) -> Result<(), Z3JitError> {
         let return_basic_block = self.context.append_basic_block(self.function, &format!("early_exit_{}", exit_id));
         let continuation_basic_block = self.context.append_basic_block(self.function, &format!("continuation_{}", exit_id));
-        self.builder.build_conditional_branch(pred_to_check, continuation_basic_block, return_basic_block);
+        self.builder.build_conditional_branch(pred_to_check, continuation_basic_block, return_basic_block)?;
         self.builder.position_at_end(return_basic_block);
-        self.builder.build_return(Some(&self.context.bool_type().const_int(0, false)));
+        self.builder.build_return(Some(&self.context.bool_type().const_int(0, false)))?;
         self.builder.position_at_end(continuation_basic_block);
+        Ok(())
     }
     fn get_function(&self) -> Option<JitFunction<JittedConstraintFunc>> {
         let func = unsafe { self.execution_engine.get_function(&self.fn_name).ok() };
@@ -149,7 +140,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
     }
 
     #[inline]
-    fn compile_children(&mut self, ast: &dyn Ast<'z3ctx>) -> Result<Vec<IntValue<'llvmctx>>, String> {
+    fn compile_children(&mut self, ast: &dyn Ast<'z3ctx>) -> Result<Vec<IntValue<'llvmctx>>, Z3JitError> {
         ast
             .children()
             .into_iter()
@@ -159,7 +150,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
     fn compile_bool_app(
         &mut self,
         ast: Bool<'z3ctx>,
-    ) -> Result<IntValue<'llvmctx>, String> {
+    ) -> Result<IntValue<'llvmctx>, Z3JitError> {
         let decl = ast.decl();
         macro_rules! z3_intcmp_to_llvm {
             ($predicate:expr) => {
@@ -167,7 +158,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                     let llvm_children = self.compile_children(&ast)?;
                     assert!(llvm_children.len() == 2);
                     let (lhs, rhs) = (llvm_children[0], llvm_children[1]);
-                    let cmp_result = self.builder.build_int_compare($predicate, lhs, rhs, "");
+                    let cmp_result = self.builder.build_int_compare($predicate, lhs, rhs, "")?;
                     cmp_result
                 }
             }
@@ -178,13 +169,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 {
                     let llvm_children = self.compile_children(&ast)?;
                     assert!(llvm_children.len() >= 2, "bit vector addition with less than 2 children: {:?}, {:?}", ast, llvm_children);
-                    let init = llvm_children[0];
+                    let init = Ok(llvm_children[0]);
 
                     let folded_children = llvm_children[1..]
                         .into_iter()
                         .fold(init, |old, &cur| {
-                            self.builder.$function(old, cur, "")
-                        });
+                            self.builder.$function(old?, cur, "")
+                        })?;
                     folded_children
                 }
             }
@@ -194,7 +185,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
             z3::DeclKind::NOT => {
                 let llvm_children = self.compile_children(&ast)?;
                 assert!(llvm_children.len() == 1);
-                self.builder.build_not(llvm_children[0], "")
+                self.builder.build_not(llvm_children[0], "")?
             },
 
             z3::DeclKind::EQ => z3_intcmp_to_llvm!(IntPredicate::EQ),
@@ -244,7 +235,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
     fn compile_bv_numeral(
         &mut self,
         bv: BV<'z3ctx>,
-    ) -> Result<IntValue<'llvmctx>, String> {
+    ) -> Result<IntValue<'llvmctx>, Z3JitError> {
         let sort = bv.get_sort();
         let size = sort.bv_size().ok_or("Could not retrieve bitvector size.")?;
         assert!(size <= 128);
@@ -275,13 +266,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
     fn compile_bv_app(
         &mut self,
         bv: BV<'z3ctx>,
-    ) -> Result<IntValue<'llvmctx>, String> {
+    ) -> Result<IntValue<'llvmctx>, Z3JitError> {
         macro_rules! z3_binop_to_llvm {
             ($function:tt) => {
                 {
                     let llvm_children = self.compile_children(&bv)?;
                     assert!(llvm_children.len() == 2, "bit vector addition with non-2 children: {:?}, {:?}", bv, llvm_children);
-                    Ok(self.builder.$function(llvm_children[0], llvm_children[1], ""))
+                    Ok(self.builder.$function(llvm_children[0], llvm_children[1], "")?)
                 }
             }
         }
@@ -290,13 +281,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 {
                     let llvm_children = self.compile_children(&bv)?;
                     assert!(llvm_children.len() >= 2, "bit vector addition with less than 2 children: {:?}, {:?}", bv, llvm_children);
-                    let init = llvm_children[0];
+                    let init = Ok(llvm_children[0]);
 
                     let folded_children = llvm_children[1..]
                         .into_iter()
                         .fold(init, |old, &cur| {
-                            self.builder.$function(old, cur, "")
-                        });
+                            self.builder.$function(old?, cur, "")
+                        })?;
                     Ok(folded_children)
                 }
             }
@@ -311,12 +302,22 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 let &index = self.ast_meta.variable_to_byte.get(&decl).expect("All variables should have been found in the index!");
                 // println!("Accessing index: {:?}[{}](max={:?})", self.input_buffer, index, self.buffer_size);
                 let llvm_idx = i64type.const_int(index.try_into().unwrap(), false);
-                let typ = self.input_buffer.get_type();
                 // println!("input_buffer: {:?}, type: {:?} {:?}", self.input_buffer, typ, typ.print_to_string());
+
+                let pointee_type = self.llvm_int_type(8); // we only ever deref bytes
+
                 let element_ptr = unsafe {
-                    self.builder.build_gep(self.input_buffer, &[llvm_idx], "gep")
-                };
-                let result = self.builder.build_load(element_ptr, &format!("var_{}", index));
+                    self.builder.build_gep(
+                        pointee_type,
+                        self.input_buffer,
+                        &[llvm_idx],
+                        &format!("var_{}_ptr", index)
+                    )
+                }?;
+                let result = self.builder.build_load(
+                                            pointee_type,
+                                            element_ptr,
+                                            &format!("var_{}", index))?;
                 if let BasicValueEnum::IntValue(x) = result {
                     Ok(x)
                 }
@@ -345,9 +346,9 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                             .get_type()
                             .const_int(lo.try_into().unwrap(), false);
                         let shifted = self.builder
-                            .build_right_shift(child, shift_amount, false, "");
+                            .build_right_shift(child, shift_amount, false, "")?;
                         let truncated = self.builder
-                            .build_int_truncate(shifted, result_type, "");
+                            .build_int_truncate(shifted, result_type, "")?;
                         Ok(truncated)
                     }
                     _ => {
@@ -360,25 +361,25 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 {
                     let llvm_children = self.compile_children(&bv)?;
                     assert!(llvm_children.len() >= 2, "bit vector addition with less than 2 children: {:?}, {:?}", bv, llvm_children);
-                    let init = llvm_children[0];
+                    let init : Result<_, Z3JitError> = Ok(llvm_children[0]);
 
                     let folded_children = llvm_children[1..]
                         .into_iter()
                         .fold(init, |old, &cur| {
-
+                            let old = old?;
                             let rhs_bitsize = cur.get_type().get_bit_width() as usize;
                             let lhs_bitsize = old.get_type().get_bit_width() as usize;
                             let result_type = self.llvm_int_type(lhs_bitsize + rhs_bitsize);
 
-                            let lhs = self.builder.build_int_z_extend(old, result_type, "");
-                            let rhs = self.builder.build_int_z_extend(cur, result_type, "");
+                            let lhs = self.builder.build_int_z_extend(old, result_type, "")?;
+                            let rhs = self.builder.build_int_z_extend(cur, result_type, "")?;
 
                             let shift_amount = result_type.const_int(rhs_bitsize.try_into().unwrap(), false);
-                            let lhs_shifted = self.builder.build_left_shift(lhs, shift_amount, "");
+                            let lhs_shifted = self.builder.build_left_shift(lhs, shift_amount, "")?;
 
-                            let result = self.builder.build_or(lhs_shifted, rhs, "");
-                            result
-                        });
+                            let result = self.builder.build_or(lhs_shifted, rhs, "")?;
+                            Ok(result)
+                        })?;
                     Ok(folded_children)
                 }
             }
@@ -392,14 +393,14 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 let llvm_children = self.compile_children(&bv)?;
                 assert!(llvm_children.len() == 1);
                 let child = llvm_children[0];
-                let result = self.builder.build_not(child, "");
+                let result = self.builder.build_not(child, "")?;
                 Ok(result)
             },
             z3::DeclKind::ITE => {
                 let llvm_children = self.compile_children(&bv)?;
                 assert!(llvm_children.len() == 3, "bit vector ITE with non-3 children: {:?}, {:?}", bv, llvm_children);
                 let id = bv.get_ast_id();
-                let res = self.builder.build_select(llvm_children[0], llvm_children[1], llvm_children[2], &format!("ite_{}", id));
+                let res = self.builder.build_select(llvm_children[0], llvm_children[1], llvm_children[2], &format!("ite_{}", id))?;
                 match res {
                     BasicValueEnum::IntValue(iv) => Ok(iv),
                     x => todo!("ITE result is not an int value: {:?}", x),
@@ -431,10 +432,10 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 let div_normal_block = self.context.append_basic_block(self.function, "");
                 let merge_block = self.context.append_basic_block(self.function, "");
 
-                self.builder.build_conditional_branch(div_by_zero_condition, div_by_zero_block, div_normal_block);
+                self.builder.build_conditional_branch(div_by_zero_condition?, div_by_zero_block, div_normal_block)?;
 
                 self.builder.position_at_end(merge_block);
-                let ret_phi = self.builder.build_phi(div_int_type, "");
+                let ret_phi = self.builder.build_phi(div_int_type, "")?;
 
                 let (result_div_by_zero, result_normal) = match div {
                     z3::DeclKind::BUDIV_I => {
@@ -447,7 +448,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                         self.builder.position_at_end(div_normal_block);
                         let normal_ret = self.builder.build_int_unsigned_div( // else return result of division
                             llvm_children[0], llvm_children[1], &format!("udiv_{}", id)
-                        );
+                        )?;
                         (fpe_ret, normal_ret)
                     },
                     z3::DeclKind::BUREM_I => {
@@ -460,7 +461,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                         self.builder.position_at_end(div_normal_block);
                         let normal_ret = self.builder.build_int_unsigned_rem( // else return result of division
                             llvm_children[0], llvm_children[1], &format!("urem_{}", id)
-                        );
+                        )?;
                         (fpe_ret, normal_ret)
                     },
                     z3::DeclKind::BSDIV_I => {
@@ -487,16 +488,16 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
 
                         self.builder.position_at_end(div_by_zero_block);
 
-                        let lhs_is_negative = self.builder.build_int_compare(IntPredicate::SLT, llvm_children[0], div_int_type.const_int(0, false), "lhs_is_negative");
+                        let lhs_is_negative = self.builder.build_int_compare(IntPredicate::SLT, llvm_children[0], div_int_type.const_int(0, false), "lhs_is_negative")?;
                         let fpe_ret = self.builder.build_select(
                             lhs_is_negative,
                             div_int_type.const_int(1, false),
                             div_int_type.const_all_ones(),
                             ""
-                        ).into_int_value();
+                        )?.into_int_value();
 
                         self.builder.position_at_end(div_normal_block);
-                        let normal_ret = self.builder.build_int_signed_div(llvm_children[0], llvm_children[1], &format!("sdiv_{}", id));
+                        let normal_ret = self.builder.build_int_signed_div(llvm_children[0], llvm_children[1], &format!("sdiv_{}", id))?;
                         (fpe_ret, normal_ret)
                     },
                     z3::DeclKind::BSREM_I => {
@@ -525,26 +526,26 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                         // if `s` is non-negative, it returns `s`
                         // if `s` is negative, it returns `(bvneg s)`
                         self.builder.position_at_end(div_by_zero_block);
-                        let lhs_is_negative = self.builder.build_int_compare(IntPredicate::SLT, llvm_children[0], div_int_type.const_int(0, false), "lhs_is_negative");
+                        let lhs_is_negative = self.builder.build_int_compare(IntPredicate::SLT, llvm_children[0], div_int_type.const_int(0, false), "lhs_is_negative")?;
 
                         let fpe_ret = self.builder.build_select(
                             lhs_is_negative,
-                            self.builder.build_int_neg(llvm_children[0], ""),
+                            self.builder.build_int_neg(llvm_children[0], "")?,
                             llvm_children[0],
                             ""
-                        ).into_int_value();
+                        )?.into_int_value();
 
                         self.builder.position_at_end(div_normal_block);
-                        let normal_ret = self.builder.build_int_signed_rem(llvm_children[0], llvm_children[1], &format!("srem_{}", id));
+                        let normal_ret = self.builder.build_int_signed_rem(llvm_children[0], llvm_children[1], &format!("srem_{}", id))?;
                         (fpe_ret, normal_ret)
                     },
                     _ => unreachable!(),
                 };
 
                 self.builder.position_at_end(div_by_zero_block);
-                self.builder.build_unconditional_branch(merge_block);
+                self.builder.build_unconditional_branch(merge_block)?;
                 self.builder.position_at_end(div_normal_block);
-                self.builder.build_unconditional_branch(merge_block);
+                self.builder.build_unconditional_branch(merge_block)?;
 
 
                 self.builder.position_at_end(merge_block);
@@ -567,13 +568,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
                 let id = bv.get_ast_id();
                 let result = match shift {
                     z3::DeclKind::BASHR => {
-                        self.builder.build_right_shift(llvm_children[0], llvm_children[1], true, &format!("ashr_{}", id))
+                        self.builder.build_right_shift(llvm_children[0], llvm_children[1], true, &format!("ashr_{}", id))?
                     },
                     z3::DeclKind::BLSHR => {
-                        self.builder.build_right_shift(llvm_children[0], llvm_children[1], false, &format!("lshr_{}", id))
+                        self.builder.build_right_shift(llvm_children[0], llvm_children[1], false, &format!("lshr_{}", id))?
                     },
                     z3::DeclKind::BSHL => {
-                        self.builder.build_left_shift(llvm_children[0], llvm_children[1], &format!("shl_{}", id))
+                        self.builder.build_left_shift(llvm_children[0], llvm_children[1], &format!("shl_{}", id))?
                     },
                     _ => unreachable!(),
                 };
@@ -586,7 +587,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
     fn compile_ast(
         &mut self,
         ast: Dynamic<'z3ctx>,
-    ) -> Result<IntValue<'llvmctx>, String>
+    ) -> Result<IntValue<'llvmctx>, Z3JitError>
     {
         if let Some(&x) = self.jitted_values.get(&ast) {
             return Ok(x)
@@ -612,14 +613,14 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
         }?;
         // println!("Cache: {:?}, ast: {:?}, result: {:?}", self.jitted_values, ast, llvm_result);
         match self.jitted_values.insert(ast.clone().into(), llvm_result) {
-            Some(prev) => Err(format!("Cache already contained item {:?}, prev={:?}", ast, prev)),
+            Some(prev) => Err(format!("Cache already contained item {:?}, prev={:?}", ast, prev))?,
             None => Ok(llvm_result)
         }
     }
     fn compile_constraint(
         &mut self,
         cst: Bool<'z3ctx>,
-    ) -> Result<(), String>
+    ) -> Result<(), Z3JitError>
     {
         let id = cst.get_ast_id();
         // println!("Compiling constraint {:?}[id={:x}]", ast, id);
@@ -627,13 +628,13 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
         self.build_early_exit_false(
             comparison_result,
             &format!("constraint_not_sat_{}", id)
-        );
+        )?;
 
         Ok(())
     }
 }
 
-fn get_bytes_model<'z3ctx, 'slice>(ctx: &z3::Context, ast_meta: &AstMetadata<'z3ctx>, csts: &[Bool<'z3ctx>]) -> Option<Vec<u8>> {
+fn _get_bytes_model<'z3ctx, 'slice>(ctx: &z3::Context, ast_meta: &AstMetadata<'z3ctx>, csts: &[Bool<'z3ctx>]) -> Option<Vec<u8>> {
     let solver = z3::Solver::new(ctx);
     for cst in csts {
         solver.assert(cst);
@@ -674,7 +675,7 @@ mod tests {
 
         let ctx = inkwell::context::Context::create();
         let (duration, code_gen) = timeit!({
-            CodeGen::new(&ctx, csts, "jitted_constraint")
+            CodeGen::new(&ctx, csts, "jitted_constraint").expect("Could not create codegen")
         });
         println!("Successfully jitted! It took {:?}", duration);
 
