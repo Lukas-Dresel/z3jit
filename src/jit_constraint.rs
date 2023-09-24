@@ -663,8 +663,8 @@ fn _get_bytes_model<'z3ctx, 'slice>(ctx: &z3::Context, ast_meta: &AstMetadata<'z
 
 #[cfg(test)]
 mod tests {
-    use std::{time::{Instant, Duration}, path::Path, process::Command};
-    use z3::ast::{BV, Ast, Bool, Dynamic};
+    use std::{path::Path, process::Command};
+    use z3::ast::{BV, Ast, Bool};
     use crate::test_utils::{function_name, timeit};
     use crate::ast_metadata::AstMetadata;
     use super::{CodeGen, _get_bytes_model};
@@ -691,20 +691,21 @@ mod tests {
         // std::io::stdin().read_line(&mut buffer).unwrap();
 
         for (input, output) in tests.into_iter() {
-            unsafe {
+            let result = unsafe {
                 let result = code_gen.get_function().unwrap();
-                result.call(input.as_ptr(), 2);
-                let (durations, results) : (Vec<u64>, Vec<bool>) = (0..10)
-                    .fold((vec![], vec![]), |(mut durs, mut ress), _| {
-                        let (d, r) = timeit!(result.call(input.as_ptr(), 2));
-                        durs.push(d);
-                        ress.push(r);
-                        (durs, ress)
-                    });
-                println!("Running the jitted function took {:?} cycles and returned {:?}[expected:{:?}]", durations, results, *output);
-                for v in results{
-                    assert_eq!(*output, v);
-                }
+                result.call(input.as_ptr(), input.len().try_into().unwrap());
+                result
+            };
+            let (durations, results) : (Vec<u64>, Vec<bool>) = (0..10)
+                .fold((vec![], vec![]), |(mut durs, mut ress), _| {
+                    let (d, r) = timeit!(unsafe {result.call(input.as_ptr(), input.len().try_into().unwrap())});
+                    durs.push(d);
+                    ress.push(r);
+                    (durs, ress)
+                });
+            println!("Running the jitted function took {:?} cycles and returned {:?}[expected:{:?}]", durations, results, *output);
+            for v in results{
+                assert_eq!(*output, v);
             }
         }
     }
