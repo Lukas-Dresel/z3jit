@@ -79,7 +79,7 @@ impl<'ctx> AstVisitor<'ctx> for AstMetadata<'ctx> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashSet, HashMap};
+    use std::collections::HashMap;
     use z3::{ast::{BV, Ast, Dynamic}};
     use crate::{ast_verbose_print::VerbosePrint, ast_metadata::AstMetadata};
 

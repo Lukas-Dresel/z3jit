@@ -136,7 +136,7 @@ impl<'llvmctx, 'z3ctx> CodeGen<'llvmctx, 'z3ctx> {
     }
 
     pub fn dump_bitcode(&self, path: &str) {
-        self.module.write_bitcode_to_path(Path::new(path));
+        assert!(self.module.write_bitcode_to_path(Path::new(path)))
     }
 
     #[inline]
@@ -665,8 +665,9 @@ fn _get_bytes_model<'z3ctx, 'slice>(ctx: &z3::Context, ast_meta: &AstMetadata<'z
 mod tests {
     use std::{time::{Instant, Duration}, path::Path, process::Command};
     use z3::ast::{BV, Ast, Bool, Dynamic};
-    use crate::{util::{function_name, timeit}, ast_metadata::AstMetadata};
-    use super::{CodeGen, get_bytes_model};
+    use crate::test_utils::{function_name, timeit};
+    use crate::ast_metadata::AstMetadata;
+    use super::{CodeGen, _get_bytes_model};
 
 
     fn jit_constraint_test<'ctx>(caller: &str, csts: Vec<Bool<'ctx>>, tests: &[(Vec<u8>, bool)]) {
@@ -679,9 +680,11 @@ mod tests {
         });
         println!("Successfully jitted! It took {:?}", duration);
 
-        let bitcode_path = format!("./test_data/{}.bc", caller);
+        // make the tmp dir if it does not exist
+        std::fs::create_dir_all("/tmp/jit_constraint_test_data").unwrap();
+        let bitcode_path = format!("/tmp/jit_constraint_test_data/{}.bc", caller);
         code_gen.dump_bitcode(&bitcode_path);
-        Command::new("llvm-dis").arg(&bitcode_path).output().unwrap();
+        Command::new("llvm-dis-15").arg(&bitcode_path).output().unwrap();
         std::fs::remove_file(Path::new(&bitcode_path)).unwrap();
 
         // let mut buffer = String::new();
@@ -852,7 +855,7 @@ mod tests {
         cfg.set_timeout_msec(60000);
         let ctx = z3::Context::new(&mut cfg);
         println!("cwd: {:?}", std::env::current_dir());
-        let constraints = ctx.parse_file("slowest_50secs.sat.smt2").unwrap();
+        let constraints = ctx.parse_file("tests/slowest_50secs.sat.smt2").unwrap();
         let conjunction = constraints.iter().fold(Bool::from_bool(&ctx, true),
         |old, cur| {
             let boolcst = cur.as_bool().expect("Every constraint must be boolean");
@@ -866,7 +869,7 @@ mod tests {
         let ast_metadata = AstMetadata::from(&constraints[..]);
 
         println!("Getting model for the cst!");
-        let model_true = get_bytes_model(&ctx, &ast_metadata, &csts[..]).expect("the constraint should be sat");
+        let model_true = _get_bytes_model(&ctx, &ast_metadata, &csts[..]).expect("the constraint should be sat");
         println!("Got model {:?}, getting model for the negated constraint!", model_true);
         let mut vec2: Vec<Bool> = csts[0..1].iter().map(Bool::clone).collect();
         vec2.push(csts[2].not());
@@ -874,7 +877,7 @@ mod tests {
         // let mut vec2: Vec<Bool> = vec![csts[0].not()];
         // vec2.extend(csts[1..].iter().map(Bool::clone));
 
-        let mut model_neg = get_bytes_model(&ctx, &ast_metadata, &[conjunction.not()]).expect("the negation of the constraint should be sat");
+        let mut model_neg = _get_bytes_model(&ctx, &ast_metadata, &[conjunction.not()]).expect("the negation of the constraint should be sat");
         model_neg[1369] = 1;
         println!("Got negated model {:?}, testing!", model_neg);
 

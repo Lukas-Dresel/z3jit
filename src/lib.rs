@@ -1,10 +1,15 @@
 #![feature(map_try_insert)]
 
 pub mod error;
+
+#[cfg(test)]
+pub mod test_utils;
+
 pub mod ast_verbose_print;
 pub mod jit_constraint;
 pub mod ast_metadata;
 pub mod util;
+
 
 #[cfg(test)]
 mod tests {

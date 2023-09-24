@@ -1,4 +1,4 @@
-; 
+;
 (set-info :status unknown)
 (declare-fun k!10240 () (_ BitVec 8))
 (declare-fun k!10250 () (_ BitVec 8))
